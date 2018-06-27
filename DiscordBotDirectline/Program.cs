@@ -3,7 +3,7 @@
  * This application can convert discord meessage to bot framework message activity. 
  * It can help Microsoft Bot interactive with Discord App.
  * 
- * X-Contract website: http://www.x-contract.org
+ * X-Contract website: http://www.jarvisplus.com
  * Author： Michael Li
  * Date: 23/JUNE/2018
  * ========================================================================================================================
@@ -29,13 +29,8 @@ namespace DiscordBotDirectline
 
         private static DiscordSocketClient _discordClient = null;
         private static DirectLineClient _directlineClinet = null;
-        private static string _conversationID = string.Empty;
-        private delegate Task RetrieveMessageFromBotHandler();
-        private static ISocketMessageChannel _channel = null;
-        private static bool _threadRunning = false;
-        private static Thread _botThread = null;
 
-        private static Dictionary<string, ChannelContext> _channelMap = null;
+        private static Dictionary<ulong, ChannelContext> _conversationManager = new Dictionary<ulong, ChannelContext>();
         #endregion
 
         #region --- Methods ---
@@ -49,10 +44,8 @@ namespace DiscordBotDirectline
                 .AddJsonFile("appsettings.json")
                 .Build();
 
-            _threadRunning = true;
-
             // Initialize Discord.NET client & DirectLine client.
-            DirectlineInit().GetAwaiter().GetResult();
+            DirectlineInit();
             DiscordInit().GetAwaiter().GetResult();
             while (true)
             {
@@ -60,14 +53,14 @@ namespace DiscordBotDirectline
                 if ("exit" == input.ToLower().Trim())
                 {
                     Console.WriteLine("Exiting....");
-                    _threadRunning = false;
+                    ShutdownAllBotThread();
                     break;
                 }
             }
             DiscordUnInit().GetAwaiter();
         }
         private static async Task DiscordInit()
-        {     
+        {
             _discordClient = new DiscordSocketClient();
             _discordClient.Log += DiscordClient_Log;
             _discordClient.MessageReceived += DiscordClient_MessageReceived;
@@ -83,16 +76,11 @@ namespace DiscordBotDirectline
             await _discordClient.StopAsync();
             _discordClient = null;
         }
-        private static async Task DirectlineInit()
+        private static void DirectlineInit()
         {
             _directlineClinet = new DirectLineClient(Config["DirectlineSecret"]);
-            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
-            _conversationID = conversation.ConversationId;
-            // start a thread to retrieve messages from Bot Framework.
-            _botThread = new Thread(async () => await RetrieveMessageFromBot());
-            _botThread.Start();
         }
-        private static async Task SendMessageToBotAsync(SocketMessage msg)
+        private static async Task SendMessageToBotAsync(string conversationId, SocketMessage msg)
         {
             if (null == msg)
                 return;
@@ -101,29 +89,171 @@ namespace DiscordBotDirectline
             act.From = new ChannelAccount(msg.Author.Id.ToString(), msg.Author.Username);
             act.Text = msg.Content;
             act.Type = ActivityTypes.Message;
+            act.Conversation = new ConversationAccount();
+            // Set group flag.
+            if ('@' == msg.Channel.Name[0])
+                act.Conversation.IsGroup = false;
+            else
+                act.Conversation.IsGroup = true;
+            act.Conversation.Id = conversationId;
+            act.Conversation.Name = msg.Channel.Name;
 
-            _channel = msg.Channel;
-            await _directlineClinet.Conversations.PostActivityAsync(_conversationID, act);
+            await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
         }
-        private static Task RetrieveMessageFromBot()
+        private static async Task<string> GenerateConversationId(ulong discordChannelId, ulong channelId, ISocketMessageChannel channel)
         {
+            // Create a new conversation.
+            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
+            if (null != conversation)
+            {
+                ChannelContext context = new ChannelContext();
+                context.ConversationId = conversation.ConversationId;
+                context.Conversation = conversation;
+                context.Channel = channel;
+                // Create a thread object reveive message from Bot Framework.
+                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
+                    _directlineClinet, Config["BotId"], channelId);
+                context.ReceiveMessageClass.StartThread();
+                _conversationManager.Add(discordChannelId, context);
+                return conversation.ConversationId;
+            }
+            else
+                return string.Empty;
+        }
+        private static void ShutdownAllBotThread()
+        {
+            foreach (ChannelContext context in _conversationManager.Values)
+            {
+                context.ReceiveMessageClass.ThreadRunning = false;
+            }
+        }
+        private static async Task GenerateConversationAndSendMessage(SocketMessage msg)
+        {
+            // Create a new conversation.
+            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
+            if (null != conversation)
+            {
+                ulong discordChannelId = msg.Channel.Id;
+                ChannelContext context = new ChannelContext();
+                context.ConversationId = conversation.ConversationId;
+                context.Conversation = conversation;
+                context.Channel = msg.Channel;
+                // Create a thread object reveive message from Bot Framework.
+                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
+                    _directlineClinet, Config["BotId"], msg.Channel.Id);
+                context.ReceiveMessageClass.StartThread();
+                // Add context to conversation manager.
+                _conversationManager.Add(discordChannelId, context);
+                await SendMessageToBotAsync(conversation.ConversationId, msg);
+            }
+        }
+        public static ISocketMessageChannel GetDiscordSocketChannel(ulong discordChannelId)
+        {
+            if (_conversationManager.ContainsKey(discordChannelId))
+                return _conversationManager[discordChannelId].Channel;
+            else
+                return null;
+        }
+        public static string GetBotConversationId(ulong discordChannelId)
+        {
+            if (_conversationManager.ContainsKey(discordChannelId))
+                return _conversationManager[discordChannelId].ConversationId;
+            else
+                return string.Empty;
+        }
+        public static Conversation GetBotConversation(ulong discordChannelId)
+        {
+            if (_conversationManager.ContainsKey(discordChannelId))
+                return _conversationManager[discordChannelId].Conversation;
+            else
+                return null;
+        }
+        #endregion
+
+        #region --- Discord Event Handlers ---
+
+        private static async Task DiscordClient_MessageReceived(SocketMessage msg)
+        {
+            try
+            {
+                // exclude Bot.
+                if (msg.Author.IsBot)
+                    return;
+
+                string conversationId = GetBotConversationId(msg.Channel.Id);
+                if (string.Empty == conversationId)
+                {
+                    GenerateConversationAndSendMessage(msg);
+                }
+                else
+
+                    // conversationId = await GenerateConversationId(msg.Channel.Id, msg.Channel.Id, msg.Channel);
+                    // Send message to Bot Framework.
+                    SendMessageToBotAsync(conversationId, msg);
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine(e.ToString());
+            }
+        }
+        private static Task DiscordClient_Log(LogMessage msg)
+        {
+            Console.WriteLine(msg.ToString());
+            return Task.CompletedTask;
+        }
+        #endregion
+
+    }
+
+    public class ChannelContext
+    {
+        public string ConversationId { get; set; }
+        public Conversation Conversation { get; set; }
+        public ISocketMessageChannel Channel { get; set; }
+        public ReceiveMessageFromBotClass ReceiveMessageClass { get; set; }
+    }
+
+    public class ReceiveMessageFromBotClass
+    {
+        public bool ThreadRunning { get; set; }
+        public string BotId { get; private set; }
+        public DirectLineClient BotClient { get; private set; }
+        public ulong ChannelId { get; private set; }
+        public Thread ReceiveThread { get; private set; }
+        public ReceiveMessageFromBotClass(DirectLineClient botClient, string botId, ulong channelId)
+        {
+            ThreadRunning = true;
+            BotId = botId;
+            BotClient = botClient;
+            ChannelId = channelId;
+        }
+        public void StartThread()
+        {
+            ReceiveThread = new Thread(new ThreadStart(RetrieveMessageFromBot));
+            ThreadRunning = true;
+            ReceiveThread.Start();
+        }
+        private void RetrieveMessageFromBot()
+        {
+            string conversationId = Program.GetBotConversationId(ChannelId);
             string watermark = null;
-            while (_threadRunning)
+            while (ThreadRunning)
             {
                 try
                 {
-                    var activitySet = _directlineClinet.Conversations
-                        .GetActivitiesAsync(_conversationID, watermark).GetAwaiter().GetResult();
+                    ActivitySet activitySet = BotClient.Conversations
+                        .GetActivitiesAsync(conversationId, watermark).GetAwaiter().GetResult();
                     watermark = activitySet?.Watermark;
+                    ISocketMessageChannel channel = Program.GetDiscordSocketChannel(ChannelId);
                     var activities = from x in activitySet.Activities
-                                     where x.From.Id == Config["BotId"]
+                                     where x.From.Id == BotId
                                      select x;
                     foreach (Activity activity in activities)
                     {
                         Console.WriteLine("Bot response: " + activity.Text);
-                        if (null != _channel)
+                        if (null != channel)
                         {
-                            _channel.SendMessageAsync(activity.Text);
+                            channel.SendMessageAsync(activity.Text);
                             Thread.Sleep(20);
                         }
                         if (activity.Attachments.Count > 0)
@@ -141,44 +271,17 @@ namespace DiscordBotDirectline
                     continue;
                 }
             }
-            return Task.CompletedTask;
         }
-        private static void RenderHeroCard(
-            Microsoft.Bot.Connector.DirectLine.Attachment attachment)
+        private void RenderHeroCard(Microsoft.Bot.Connector.DirectLine.Attachment attachment)
         {
             // It seems that the Discord cannot display any other message type except text and voice.
             Console.WriteLine(attachment.Content.ToString());
-            if(null != _channel)
+            ISocketMessageChannel channel = Program.GetDiscordSocketChannel(ChannelId);
+            if (null != channel)
             {
-                _channel.SendMessageAsync(attachment.Content.ToString());
+                channel.SendMessageAsync(attachment.Content.ToString());
                 Thread.Sleep(20);
             }
         }
-        #endregion
-
-        #region --- Discord Event Handlers ---
-
-        private static async Task DiscordClient_MessageReceived(SocketMessage msg)
-        {
-            // exclude Bot.
-            if (msg.Author.IsBot)   
-                return;
-            // Send message to Bot Framework.
-            SendMessageToBotAsync(msg);
-        }
-        private static Task DiscordClient_Log(LogMessage msg)
-        {
-            Console.WriteLine(msg.ToString());
-            return Task.CompletedTask;
-        }
-        #endregion
-
-    }
-
-    public class ChannelContext
-    {
-        public string ChannelName { get; set; }
-        public Conversation Conversation { get; set; }
-        public ISocketMessageChannel Channel { get; set; }
     }
 }
