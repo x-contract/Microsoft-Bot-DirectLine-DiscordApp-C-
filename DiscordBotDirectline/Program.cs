@@ -85,7 +85,7 @@ namespace DiscordBotDirectline
             if (null == msg)
                 return;
             Activity act = new Activity();
-            act.ChannelId = msg.Channel.Name;
+            act.ChannelId = "discord";
             act.From = new ChannelAccount(msg.Author.Id.ToString(), msg.Author.Username);
             act.Text = msg.Content;
             act.Type = ActivityTypes.Message;
