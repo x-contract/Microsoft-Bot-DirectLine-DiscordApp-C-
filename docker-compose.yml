@@ -1,0 +1,8 @@
+version: '3'
+
+services:
+  discordbotdirectline:
+    image: discordbotdirectlineapp
+    build:
+      context: .
+      dockerfile: DiscordBotDirectline/Dockerfile

@@ -9,17 +9,17 @@
  * ========================================================================================================================
  */
 
-using System;
-using System.IO;
-using Microsoft.Bot.Connector.DirectLine;
-using System.Threading.Tasks;
 using Discord;
 using Discord.WebSocket;
-using System.Threading;
-using System.Linq;
-using System.Collections.Generic;
+using Microsoft.Bot.Connector.DirectLine;
 using Microsoft.Extensions.Configuration;
-using Newtonsoft.Json;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace DiscordBotDirectline
 {
@@ -29,6 +29,8 @@ namespace DiscordBotDirectline
 
         private static DiscordSocketClient _discordClient = null;
         private static DirectLineClient _directlineClinet = null;
+        private static readonly string _theChannelName = "DiscordApp";
+        private static string _botId = string.Empty;
 
         private static Dictionary<ulong, ChannelContext> _conversationManager = new Dictionary<ulong, ChannelContext>();
         #endregion
@@ -43,6 +45,7 @@ namespace DiscordBotDirectline
                 .SetBasePath(Directory.GetCurrentDirectory())
                 .AddJsonFile("appsettings.json")
                 .Build();
+            _botId = Config["BotId"];
 
             // Initialize Discord.NET client & DirectLine client.
             DirectlineInit();
@@ -64,16 +67,18 @@ namespace DiscordBotDirectline
             _discordClient = new DiscordSocketClient();
             _discordClient.Log += DiscordClient_Log;
             _discordClient.MessageReceived += DiscordClient_MessageReceived;
-
+       
             await _discordClient.LoginAsync(TokenType.Bot, Config["DiscordBotSecret"]);
             await _discordClient.StartAsync();
         }
+
         private static async Task DiscordUnInit()
         {
             _discordClient.Log -= DiscordClient_Log;
             _discordClient.MessageReceived -= DiscordClient_MessageReceived;
 
             await _discordClient.StopAsync();
+            await _discordClient.LogoutAsync();
             _discordClient = null;
         }
         private static void DirectlineInit()
@@ -84,11 +89,16 @@ namespace DiscordBotDirectline
         {
             if (null == msg)
                 return;
+            // Set channel object.
+            _conversationManager[msg.Channel.Id].Channel = msg.Channel;
             Activity act = new Activity();
-            act.ChannelId = msg.Channel.Name;
+            act.ChannelId = _theChannelName;
             act.From = new ChannelAccount(msg.Author.Id.ToString(), msg.Author.Username);
             act.Text = msg.Content;
-            act.Type = ActivityTypes.Message;
+            if (MessageSource.System == msg.Source)
+                act.Type = ActivityTypes.ConversationUpdate;
+            else if (MessageSource.User == msg.Source)
+                act.Type = ActivityTypes.Message;
             act.Conversation = new ConversationAccount();
             // Set group flag.
             if ('@' == msg.Channel.Name[0])
@@ -98,27 +108,28 @@ namespace DiscordBotDirectline
             act.Conversation.Id = conversationId;
             act.Conversation.Name = msg.Channel.Name;
 
-            await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
-        }
-        private static async Task<string> GenerateConversationId(ulong discordChannelId, ulong channelId, ISocketMessageChannel channel)
-        {
-            // Create a new conversation.
-            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
-            if (null != conversation)
+            foreach (Discord.Attachment datt in msg.Attachments)
             {
-                ChannelContext context = new ChannelContext();
-                context.ConversationId = conversation.ConversationId;
-                context.Conversation = conversation;
-                context.Channel = channel;
-                // Create a thread object reveive message from Bot Framework.
-                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
-                    _directlineClinet, Config["BotId"], channelId);
-                context.ReceiveMessageClass.StartThread();
-                _conversationManager.Add(discordChannelId, context);
-                return conversation.ConversationId;
+                string url = datt.Url;            
+                Microsoft.Bot.Connector.DirectLine.Attachment att = new Microsoft.Bot.Connector.DirectLine.Attachment();
+                // Actually, When user send a file, DiscordApp always upload it to DiscordApp media server
+                // and then raise MessageReceived event. If you want to get binary please un-comments below code.
+                // But usually, we only need to send media Uri. Because it will improve message transfer speed.
+                //
+                //HttpClient client = new HttpClient();
+                //using (Stream s = await client.GetStreamAsync(url))
+                //{
+                //    byte[] buff = new byte[s.Length];
+                //    s.Read(buff, 0, (int)s.Length);
+
+                //    att.Content = buff;
+                //}
+                att.ContentType = GetMediaTypeFromUri(url);
+                att.ContentUrl = url;
+                act.Attachments.Add(att);
             }
-            else
-                return string.Empty;
+
+            await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
         }
         private static void ShutdownAllBotThread()
         {
@@ -140,11 +151,30 @@ namespace DiscordBotDirectline
                 context.Channel = msg.Channel;
                 // Create a thread object reveive message from Bot Framework.
                 context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
-                    _directlineClinet, Config["BotId"], msg.Channel.Id);
+                    _directlineClinet, _botId, msg.Channel.Id);
                 context.ReceiveMessageClass.StartThread();
                 // Add context to conversation manager.
                 _conversationManager.Add(discordChannelId, context);
                 await SendMessageToBotAsync(conversation.ConversationId, msg);
+            }
+        }
+        private static async Task GenerateConversation(SocketChannel channel)
+        {
+            // Create a new conversation.
+            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
+            if (null != conversation)
+            {
+                ulong discordChannelId = channel.Id;
+                ChannelContext context = new ChannelContext();
+                context.ConversationId = conversation.ConversationId;
+                context.Conversation = conversation;
+                context.Channel = null;
+                // Create a thread object reveive message from Bot Framework.
+                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
+                    _directlineClinet, _botId, channel.Id);
+                context.ReceiveMessageClass.StartThread();
+                // Add context to conversation manager.
+                _conversationManager.Add(discordChannelId, context);
             }
         }
         public static ISocketMessageChannel GetDiscordSocketChannel(ulong discordChannelId)
@@ -168,6 +198,14 @@ namespace DiscordBotDirectline
             else
                 return null;
         }
+        private static string GetMediaTypeFromUri(string uri)
+        {
+            if (uri.Contains('.'))
+                return uri.Substring(uri.IndexOf(".") + 1, 
+                    uri.Length - uri.IndexOf(".") - 1);
+            else
+                return "binary";
+        }
         #endregion
 
         #region --- Discord Event Handlers ---
@@ -177,7 +215,7 @@ namespace DiscordBotDirectline
             try
             {
                 // exclude Bot.
-                if (msg.Author.IsBot)
+                if (msg.Author.IsBot || msg.Author.IsWebhook)
                     return;
 
                 string conversationId = GetBotConversationId(msg.Channel.Id);
@@ -186,8 +224,6 @@ namespace DiscordBotDirectline
                     GenerateConversationAndSendMessage(msg);
                 }
                 else
-
-                    // conversationId = await GenerateConversationId(msg.Channel.Id, msg.Channel.Id, msg.Channel);
                     // Send message to Bot Framework.
                     SendMessageToBotAsync(conversationId, msg);
             }
@@ -250,10 +286,10 @@ namespace DiscordBotDirectline
                                      select x;
                     foreach (Activity activity in activities)
                     {
-                        Console.WriteLine("Bot response: " + activity.Text);
+                        Console.WriteLine("Bot response: " + GetMessageText(activity));
                         if (null != channel)
                         {
-                            channel.SendMessageAsync(activity.Text);
+                            channel.SendMessageAsync(GetMessageText(activity));
                             Thread.Sleep(20);
                         }
                         if (activity.Attachments.Count > 0)
@@ -262,6 +298,11 @@ namespace DiscordBotDirectline
                             {
                                 if ("application/vnd.microsoft.card.hero" == att.ContentType)
                                     RenderHeroCard(att);
+                                else if (IsImage(att.ContentType))
+                                {
+                                    // Send image to DiscordApp.
+                                    channel.SendFileAsync(att.ContentUrl);
+                                }
                             }
                         }
                     }
@@ -282,6 +323,28 @@ namespace DiscordBotDirectline
                 channel.SendMessageAsync(attachment.Content.ToString());
                 Thread.Sleep(20);
             }
+        }
+        private bool IsImage(string contentType)
+        {
+            if (contentType.ToLower().IndexOf("image/") >= 0)
+                return true;
+            else
+                return false;
+        }
+        private string GetMessageText(Activity activity)
+        {
+            StringBuilder sb = new StringBuilder();
+            sb.Append(activity.Text);
+            if (activity.SuggestedActions.Actions.Count > 0)
+            {
+                sb.Append("\r\n");
+                for (int i = 1; i <= activity.SuggestedActions.Actions.Count; i++)
+                {
+                    sb.Append(i.ToString() + ". ");
+                    sb.Append(activity.SuggestedActions.Actions[i - 1].Value + "\r\n");
+                }
+            }
+            return sb.ToString();
         }
     }
 }
