@@ -31,7 +31,7 @@ namespace DiscordBotDirectline
         private static DirectLineClient _directlineClinet = null;
         private static readonly string _theChannelName = "DiscordApp";
         private static string _botId = string.Empty;
-
+        private static AutoResetEvent _autoEvent = new AutoResetEvent(false);
         private static Dictionary<ulong, ChannelContext> _conversationManager = new Dictionary<ulong, ChannelContext>();
         #endregion
 
@@ -50,17 +50,21 @@ namespace DiscordBotDirectline
             // Initialize Discord.NET client & DirectLine client.
             DirectlineInit();
             DiscordInit().GetAwaiter().GetResult();
-            while (true)
-            {
-                string input = Console.ReadLine();
-                if ("exit" == input.ToLower().Trim())
-                {
-                    Console.WriteLine("Exiting....");
-                    ShutdownAllBotThread();
-                    break;
-                }
-            }
-            DiscordUnInit().GetAwaiter();
+            //while (true)
+            //{
+            //    string input = Console.ReadLine();
+            //    if ("exit" == input.ToLower().Trim())
+            //    {
+            //        Console.WriteLine("Exiting....");
+            //        ShutdownAllBotThread();
+            //        break;
+            //    }
+            //}
+            //DiscordUnInit().GetAwaiter();
+            // The reason of use AutoEvent replace Console.ReadLine() is 
+            // to make the program run in the background without UI.
+            // Application will be killed by OS.
+            _autoEvent.WaitOne();
         }
         private static async Task DiscordInit()
         {
