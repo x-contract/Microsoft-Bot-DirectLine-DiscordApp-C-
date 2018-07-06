@@ -95,7 +95,7 @@ namespace DiscordBotDirectline
                 return;
             // Set channel object.
             _conversationManager[msg.Channel.Id].Channel = msg.Channel;
-            Activity act = new Activity();
+            var act = new Activity();
             act.ChannelId = _theChannelName;
             act.From = new ChannelAccount(msg.Author.Id.ToString(), msg.Author.Username);
             act.Text = msg.Content;
@@ -108,9 +108,16 @@ namespace DiscordBotDirectline
             if ('@' == msg.Channel.Name[0])
                 act.Conversation.IsGroup = false;
             else
-                act.Conversation.IsGroup = true;
+                act.Conversation.IsGroup = true;            
+            
             act.Conversation.Id = conversationId;
             act.Conversation.Name = msg.Channel.Name;
+
+            var channelData = new Newtonsoft.Json.Linq.JObject();
+            channelData["groupName"] = msg.Channel.Name;
+            channelData["isGroup"] = act.Conversation.IsGroup;
+            channelData["channelId"] = _theChannelName;
+            act.ChannelData = channelData;
 
             foreach (Discord.Attachment datt in msg.Attachments)
             {
@@ -133,7 +140,8 @@ namespace DiscordBotDirectline
                 act.Attachments.Add(att);
             }
             Log.V("Direct to bot...");
-            await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
+            var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
+            Log.V("Direct response " + resp.ToString());
         }
         private static void ShutdownAllBotThread()
         {
@@ -154,31 +162,12 @@ namespace DiscordBotDirectline
                 context.Conversation = conversation;
                 context.Channel = msg.Channel;
                 // Create a thread object reveive message from Bot Framework.
-                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
-                    _directlineClinet, _botId, msg.Channel.Id);
-                context.ReceiveMessageClass.StartThread();
+                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(_directlineClinet, _botId, msg.Channel.Id);
+                
                 // Add context to conversation manager.
                 _conversationManager.Add(discordChannelId, context);
                 await SendMessageToBotAsync(conversation.ConversationId, msg);
-            }
-        }
-        private static async Task GenerateConversation(SocketChannel channel)
-        {
-            // Create a new conversation.
-            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
-            if (null != conversation)
-            {
-                ulong discordChannelId = channel.Id;
-                ChannelContext context = new ChannelContext();
-                context.ConversationId = conversation.ConversationId;
-                context.Conversation = conversation;
-                context.Channel = null;
-                // Create a thread object reveive message from Bot Framework.
-                context.ReceiveMessageClass = new ReceiveMessageFromBotClass(
-                    _directlineClinet, _botId, channel.Id);
                 context.ReceiveMessageClass.StartThread();
-                // Add context to conversation manager.
-                _conversationManager.Add(discordChannelId, context);
             }
         }
         public static ISocketMessageChannel GetDiscordSocketChannel(ulong discordChannelId)
@@ -297,6 +286,7 @@ namespace DiscordBotDirectline
                     var activities = from x in activitySet.Activities
                                      where x.From.Id == BotId
                                      select x;
+
                     foreach (Activity activity in activities)
                     {
                         Log.V("Bot response: " + GetMessageText(activity));
@@ -320,9 +310,9 @@ namespace DiscordBotDirectline
                         }
                     }
                 }
-                catch //(Exception e)
+                catch (Exception e)
                 {
-                    //Log.V(e.Message);
+                    Log.V(e.Message);
                     continue;
                 }
             }
@@ -349,7 +339,8 @@ namespace DiscordBotDirectline
         {
             StringBuilder sb = new StringBuilder();
             sb.Append(activity.Text);
-            if (activity.SuggestedActions.Actions.Count > 0)
+
+            if (activity.SuggestedActions?.Actions.Count > 0)
             {
                 sb.Append("\r\n");
                 for (int i = 1; i <= activity.SuggestedActions.Actions.Count; i++)
