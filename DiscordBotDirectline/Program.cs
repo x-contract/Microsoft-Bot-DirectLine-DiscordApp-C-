@@ -132,7 +132,7 @@ namespace DiscordBotDirectline
                 att.ContentUrl = url;
                 act.Attachments.Add(att);
             }
-
+            Log.V("Direct to bot...");
             await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
         }
         private static void ShutdownAllBotThread()
@@ -217,10 +217,11 @@ namespace DiscordBotDirectline
         private static async Task DiscordClient_MessageReceived(SocketMessage msg)
         {
             try
-            {
+            {                
                 // exclude Bot.
                 if (msg.Author.IsBot || msg.Author.IsWebhook)
                     return;
+                Log.V(string.Format("user {0}[{1}] say in group {2}[{3}]  {4}", msg.Author.Username, msg.Author.Id, msg.Channel.Name, msg.Channel.Id, msg.Content));
 
                 string conversationId = GetBotConversationId(msg.Channel.Id);
                 if (string.Empty == conversationId)
@@ -243,6 +244,14 @@ namespace DiscordBotDirectline
         }
         #endregion
 
+    }
+
+    public static class Log
+    {
+        public static void V(string text)
+        {
+            Console.WriteLine(DateTime.Now.ToString("[yyyy-MM-dd HH:mm:ss]") + " " + text);
+        }
     }
 
     public class ChannelContext
@@ -290,7 +299,7 @@ namespace DiscordBotDirectline
                                      select x;
                     foreach (Activity activity in activities)
                     {
-                        Console.WriteLine("Bot response: " + GetMessageText(activity));
+                        Log.V("Bot response: " + GetMessageText(activity));
                         if (null != channel)
                         {
                             channel.SendMessageAsync(GetMessageText(activity));
@@ -311,8 +320,9 @@ namespace DiscordBotDirectline
                         }
                     }
                 }
-                catch
+                catch //(Exception e)
                 {
+                    //Log.V(e.Message);
                     continue;
                 }
             }
