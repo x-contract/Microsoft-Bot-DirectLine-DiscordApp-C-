@@ -20,6 +20,8 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using WebSocketSharp;
+using Newtonsoft.Json;
 
 namespace DiscordBotDirectline
 {
@@ -31,6 +33,7 @@ namespace DiscordBotDirectline
         private static DirectLineClient _directlineClinet = null;
         private static readonly string _theChannelName = "DiscordApp";
         private static string _botId = string.Empty;
+        private static string _directLineSecret = string.Empty;
         private static AutoResetEvent _autoEvent = new AutoResetEvent(false);
         private static Dictionary<ulong, ChannelContext> _conversationManager = new Dictionary<ulong, ChannelContext>();
         #endregion
@@ -46,6 +49,7 @@ namespace DiscordBotDirectline
                 .AddJsonFile("appsettings.json")
                 .Build();
             _botId = Config["BotId"];
+            _directLineSecret = Config["DirectlineSecret"];
 
             // Initialize Discord.NET client & DirectLine client.
             DirectlineInit();
@@ -71,11 +75,10 @@ namespace DiscordBotDirectline
             _discordClient = new DiscordSocketClient();
             _discordClient.Log += DiscordClient_Log;
             _discordClient.MessageReceived += DiscordClient_MessageReceived;
-       
+            
             await _discordClient.LoginAsync(TokenType.Bot, Config["DiscordBotSecret"]);
             await _discordClient.StartAsync();
         }
-
         private static async Task DiscordUnInit()
         {
             _discordClient.Log -= DiscordClient_Log;
@@ -114,7 +117,7 @@ namespace DiscordBotDirectline
             act.Conversation.Name = msg.Channel.Name;
 
             var channelData = new Newtonsoft.Json.Linq.JObject();
-            channelData["groupName"] = msg.Channel.Name;
+            channelData["groupName"] = (msg.Channel as SocketTextChannel)?.Guild.Name + "#" + msg.Channel.Name;
             channelData["isGroup"] = act.Conversation.IsGroup;
             channelData["channelId"] = _theChannelName;
             act.ChannelData = channelData;
@@ -139,21 +142,17 @@ namespace DiscordBotDirectline
                 att.ContentUrl = url;
                 act.Attachments.Add(att);
             }
-            Log.V("Direct to bot...");
+            Log.OutputLine("Direct to bot...");
             var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
-            Log.V("Direct response " + resp.ToString());
-        }
-        private static void ShutdownAllBotThread()
-        {
-            foreach (ChannelContext context in _conversationManager.Values)
-            {
-                context.ReceiveMessageClass.ThreadRunning = false;
-            }
+            Log.OutputLine("Direct response " + resp.ToString());
         }
         private static async Task GenerateConversationAndSendMessage(SocketMessage msg)
         {
-            // Create a new conversation.
-            var conversation = await _directlineClinet.Conversations.StartConversationAsync();
+            // Use secret to create token.
+            var tokenResponse = await new DirectLineClient(_directLineSecret).Tokens.GenerateTokenForNewConversationAsync();
+            // Use token to create conversation
+            var directLineClient = new DirectLineClient(tokenResponse.Token);
+            var conversation = await directLineClient.Conversations.StartConversationAsync();
             if (null != conversation)
             {
                 ulong discordChannelId = msg.Channel.Id;
@@ -161,13 +160,12 @@ namespace DiscordBotDirectline
                 context.ConversationId = conversation.ConversationId;
                 context.Conversation = conversation;
                 context.Channel = msg.Channel;
+                // Add context to conversation manager.
+                _conversationManager.Add(discordChannelId, context);
                 // Create a thread object reveive message from Bot Framework.
                 context.ReceiveMessageClass = new ReceiveMessageFromBotClass(_directlineClinet, _botId, msg.Channel.Id);
                 
-                // Add context to conversation manager.
-                _conversationManager.Add(discordChannelId, context);
                 await SendMessageToBotAsync(conversation.ConversationId, msg);
-                context.ReceiveMessageClass.StartThread();
             }
         }
         public static ISocketMessageChannel GetDiscordSocketChannel(ulong discordChannelId)
@@ -210,7 +208,7 @@ namespace DiscordBotDirectline
                 // exclude Bot.
                 if (msg.Author.IsBot || msg.Author.IsWebhook)
                     return;
-                Log.V(string.Format("user {0}[{1}] say in group {2}[{3}]  {4}", msg.Author.Username, msg.Author.Id, msg.Channel.Name, msg.Channel.Id, msg.Content));
+                Log.OutputLine(string.Format("user {0}[{1}] say in group {2}[{3}]  {4}", msg.Author.Username, msg.Author.Id, msg.Channel.Name, msg.Channel.Id, msg.Content));
 
                 string conversationId = GetBotConversationId(msg.Channel.Id);
                 if (string.Empty == conversationId)
@@ -237,9 +235,9 @@ namespace DiscordBotDirectline
 
     public static class Log
     {
-        public static void V(string text)
+        public static void OutputLine(string text)
         {
-            Console.WriteLine(DateTime.Now.ToString("[yyyy-MM-dd HH:mm:ss]") + " " + text);
+            Console.WriteLine(DateTime.Now.ToString("u") + "\t" + text);
         }
     }
 
@@ -251,70 +249,77 @@ namespace DiscordBotDirectline
         public ReceiveMessageFromBotClass ReceiveMessageClass { get; set; }
     }
 
-    public class ReceiveMessageFromBotClass
+    public class ReceiveMessageFromBotClass : IDisposable
     {
-        public bool ThreadRunning { get; set; }
+        #region --- Properties ---
         public string BotId { get; private set; }
         public DirectLineClient BotClient { get; private set; }
         public ulong ChannelId { get; private set; }
-        public Thread ReceiveThread { get; private set; }
+        public WebSocketSharp.WebSocket WebSocketClient { get; private set; }
+        #endregion
+
+        #region --- Constructors ---
         public ReceiveMessageFromBotClass(DirectLineClient botClient, string botId, ulong channelId)
         {
-            ThreadRunning = true;
             BotId = botId;
             BotClient = botClient;
             ChannelId = channelId;
-        }
-        public void StartThread()
-        {
-            ReceiveThread = new Thread(new ThreadStart(RetrieveMessageFromBot));
-            ThreadRunning = true;
-            ReceiveThread.Start();
-        }
-        private void RetrieveMessageFromBot()
-        {
-            string conversationId = Program.GetBotConversationId(ChannelId);
-            string watermark = null;
-            while (ThreadRunning)
-            {
-                try
-                {
-                    ActivitySet activitySet = BotClient.Conversations
-                        .GetActivitiesAsync(conversationId, watermark).GetAwaiter().GetResult();
-                    watermark = activitySet?.Watermark;
-                    ISocketMessageChannel channel = Program.GetDiscordSocketChannel(ChannelId);
-                    var activities = from x in activitySet.Activities
-                                     where x.From.Id == BotId
-                                     select x;
 
-                    foreach (Activity activity in activities)
+            Conversation conversation = Program.GetBotConversation(channelId);
+            if (null != conversation)
+            {
+                // Use WebSocket receive message.
+                WebSocketClient = new WebSocket(conversation.StreamUrl);
+                WebSocketClient.SslConfiguration.CheckCertificateRevocation = false;
+                // You have to specify TLS version to 1.2 or connection will be failed in handshake.
+                WebSocketClient.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
+                WebSocketClient.SslConfiguration.ServerCertificateValidationCallback =
+                    (sender, certificate, chain, sslPolicyErrors) => {
+                    // Ignore server cetification validation.
+                    return true;
+                    };
+                WebSocketClient.OnMessage += WebSocketClient_OnMessage;
+                WebSocketClient.Connect();
+            }
+        }
+        #endregion
+
+        #region --- Private functions ---
+        private void WebSocketClient_OnMessage(object sender, MessageEventArgs e)
+        {
+            try
+            {
+                var activitySet = JsonConvert.DeserializeObject<ActivitySet>(e.Data);
+                var activities = from x in activitySet.Activities
+                                 where x.From.Id == BotId
+                                 select x;
+                ISocketMessageChannel channel = Program.GetDiscordSocketChannel(ChannelId);
+                foreach (Activity activity in activities)
+                {
+                    Log.OutputLine("Bot response: " + GetMessageText(activity));
+                    if (null != channel)
                     {
-                        Log.V("Bot response: " + GetMessageText(activity));
-                        if (null != channel)
+                        channel.SendMessageAsync(GetMessageText(activity));
+                        Thread.Sleep(20);
+                    }
+                    if (activity.Attachments.Count > 0)
+                    {
+                        foreach (Microsoft.Bot.Connector.DirectLine.Attachment att in activity.Attachments)
                         {
-                            channel.SendMessageAsync(GetMessageText(activity));
-                            Thread.Sleep(20);
-                        }
-                        if (activity.Attachments.Count > 0)
-                        {
-                            foreach (Microsoft.Bot.Connector.DirectLine.Attachment att in activity.Attachments)
+                            if ("application/vnd.microsoft.card.hero" == att.ContentType)
+                                RenderHeroCard(att);
+                            else if (IsImage(att.ContentType))
                             {
-                                if ("application/vnd.microsoft.card.hero" == att.ContentType)
-                                    RenderHeroCard(att);
-                                else if (IsImage(att.ContentType))
-                                {
-                                    // Send image to DiscordApp.
-                                    channel.SendFileAsync(att.ContentUrl);
-                                }
+                                // Send image to DiscordApp.
+                                channel.SendFileAsync(att.ContentUrl);
                             }
                         }
                     }
                 }
-                catch (Exception e)
-                {
-                    Log.V(e.Message);
-                    continue;
-                }
+            }
+            catch (Exception ex)
+            {
+                Log.OutputLine(ex.ToString());
             }
         }
         private void RenderHeroCard(Microsoft.Bot.Connector.DirectLine.Attachment attachment)
@@ -351,5 +356,30 @@ namespace DiscordBotDirectline
             }
             return sb.ToString();
         }
+        #endregion
+
+        #region IDisposable Support
+        private bool disposedValue = false;
+
+        protected virtual void Dispose(bool disposing)
+        {
+            if (!disposedValue)
+            {
+                if (disposing)
+                {
+                    WebSocketClient.Close();
+                    WebSocketClient = null;
+                    BotClient.Dispose();
+                    BotClient = null;
+                }
+                disposedValue = true;
+            }
+        }
+        public void Dispose()
+        {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+        #endregion
     }
 }
