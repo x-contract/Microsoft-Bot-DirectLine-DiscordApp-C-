@@ -144,7 +144,7 @@ namespace DiscordBotDirectline
             }
             Log.OutputLine("Direct to bot...");
             var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
-            Log.OutputLine("Direct response " + resp.ToString());
+            Log.OutputLine("Direct response " + resp.Id);
         }
         private static async Task GenerateConversationAndSendMessage(SocketMessage msg)
         {
@@ -289,7 +289,12 @@ namespace DiscordBotDirectline
         {
             try
             {
+                //Log.OutputLine(string.Format("Web socket received a {0} message: {1} ", e.IsPing?"Ping":(e.IsText?"Text":"Binary"), e.Data));
                 var activitySet = JsonConvert.DeserializeObject<ActivitySet>(e.Data);
+                if (activitySet == null || activitySet.Activities == null)
+                {
+                    return;
+                }
                 var activities = from x in activitySet.Activities
                                  where x.From.Id == BotId
                                  select x;
