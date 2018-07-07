@@ -213,11 +213,11 @@ namespace DiscordBotDirectline
                 string conversationId = GetBotConversationId(msg.Channel.Id);
                 if (string.Empty == conversationId)
                 {
-                    GenerateConversationAndSendMessage(msg);
+                    Task.Run(() => GenerateConversationAndSendMessage(msg));
                 }
                 else
                     // Send message to Bot Framework.
-                    SendMessageToBotAsync(conversationId, msg);
+                    Task.Run(() => SendMessageToBotAsync(conversationId, msg));
             }
             catch (Exception e)
             {
