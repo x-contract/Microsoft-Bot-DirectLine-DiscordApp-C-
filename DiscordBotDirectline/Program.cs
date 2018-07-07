@@ -114,7 +114,7 @@ namespace DiscordBotDirectline
             act.Conversation.Name = msg.Channel.Name;
 
             var channelData = new Newtonsoft.Json.Linq.JObject();
-            channelData["groupName"] = msg.Channel.Name;
+            channelData["groupName"] = (msg.Channel as SocketTextChannel)?.Guild.Name + "#" + msg.Channel.Name;
             channelData["isGroup"] = act.Conversation.IsGroup;
             channelData["channelId"] = _theChannelName;
             act.ChannelData = channelData;
@@ -141,7 +141,7 @@ namespace DiscordBotDirectline
             }
             Log.V("Direct to bot...");
             var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
-            Log.V("Direct response " + resp.ToString());
+            Log.V("Direct response " + resp.Id);
         }
         private static void ShutdownAllBotThread()
         {
@@ -215,11 +215,11 @@ namespace DiscordBotDirectline
                 string conversationId = GetBotConversationId(msg.Channel.Id);
                 if (string.Empty == conversationId)
                 {
-                    GenerateConversationAndSendMessage(msg);
+                    Task.Run(() => GenerateConversationAndSendMessage(msg));
                 }
                 else
                     // Send message to Bot Framework.
-                    SendMessageToBotAsync(conversationId, msg);
+                    Task.Run(() => SendMessageToBotAsync(conversationId, msg));
             }
             catch (Exception e)
             {
