@@ -75,10 +75,14 @@ namespace DiscordBotDirectline
             _discordClient = new DiscordSocketClient();
             _discordClient.Log += DiscordClient_Log;
             _discordClient.MessageReceived += DiscordClient_MessageReceived;
+            _discordClient.ChannelUpdated += DiscordClient_ChannelUpdated;
             
             await _discordClient.LoginAsync(TokenType.Bot, Config["DiscordBotSecret"]);
             await _discordClient.StartAsync();
         }
+
+
+
         private static async Task DiscordUnInit()
         {
             _discordClient.Log -= DiscordClient_Log;
@@ -143,7 +147,7 @@ namespace DiscordBotDirectline
                 act.Attachments.Add(att);
             }
             Log.OutputLine("Direct to bot...");
-            var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
+            var resp = await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
             Log.OutputLine("Direct response " + resp.Id);
         }
         private static async Task GenerateConversationAndSendMessage(SocketMessage msg)
@@ -222,6 +226,32 @@ namespace DiscordBotDirectline
             catch (Exception e)
             {
                 Console.WriteLine(e.ToString());
+            }
+        }
+        private static async Task DiscordClient_ChannelUpdated(SocketChannel arg1, SocketChannel arg2)
+        {
+            var oldChannel = arg1 as Discord.WebSocket.SocketGuildChannel;
+            var newChannel = arg2 as Discord.WebSocket.SocketGuildChannel;
+            if (null != oldChannel && null != newChannel)
+            {
+                if (oldChannel.Name != newChannel.Name)
+                {
+                    Activity act = new Activity();
+                    act.Type = ActivityTypes.ConversationUpdate;
+                    var channelData = new Newtonsoft.Json.Linq.JObject();
+                    channelData["eventType"] = "GroupNameChanged";
+                    channelData["groupName"] = oldChannel.Guild.Name + "#" + oldChannel.Name;
+                    channelData["groupNewName"] = newChannel.Guild.Name + "#" + newChannel.Name;
+                    channelData["isGroup"] = act.Conversation.IsGroup;
+                    channelData["channelId"] = _theChannelName;
+                    var conversationId = Program.GetBotConversationId(oldChannel.Id);
+                    if (string.Empty != conversationId)
+                    {
+                        Log.OutputLine("DiscordApp group name has been changed...");
+                        var resp = _directlineClinet.Conversations.PostActivity(conversationId, act);
+                        Log.OutputLine("Direct response " + resp.Id);
+                    }
+                }
             }
         }
         private static Task DiscordClient_Log(LogMessage msg)
