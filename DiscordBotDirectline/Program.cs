@@ -182,6 +182,10 @@ namespace DiscordBotDirectline
             else
                 return string.Empty;
         }
+        public static void UpdateBotConversation(ulong discordChannelId, Conversation conversation)
+        {
+            _conversationManager[discordChannelId].Conversation = conversation;
+        }
         public static Conversation GetBotConversation(ulong discordChannelId)
         {
             if (_conversationManager.ContainsKey(discordChannelId))
@@ -264,32 +268,67 @@ namespace DiscordBotDirectline
             BotId = botId;
             BotClient = botClient;
             ChannelId = channelId;
-
-            Conversation conversation = Program.GetBotConversation(channelId);
-            if (null != conversation)
-            {
-                // Use WebSocket receive message.
-                WebSocketClient = new WebSocket(conversation.StreamUrl);
-                WebSocketClient.SslConfiguration.CheckCertificateRevocation = false;
-                // You have to specify TLS version to 1.2 or connection will be failed in handshake.
-                WebSocketClient.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
-                WebSocketClient.SslConfiguration.ServerCertificateValidationCallback =
-                    (sender, certificate, chain, sslPolicyErrors) => {
-                    // Ignore server cetification validation.
-                    return true;
-                    };
-                WebSocketClient.OnMessage += WebSocketClient_OnMessage;
-                WebSocketClient.Connect();
-            }
+            ConnectToConversion(false);
         }
         #endregion
 
         #region --- Private functions ---
+        private void ConnectToConversion(bool reconnect)
+        {
+            if (WebSocketClient != null)
+            {
+                WebSocketClient.Close();
+                WebSocketClient.OnMessage -= WebSocketClient_OnMessage;
+                WebSocketClient.OnError -= WebSocketClient_OnError;
+                WebSocketClient = null;
+            }
+            Conversation conversation = Program.GetBotConversation(ChannelId);
+            if (null == conversation)
+                return;
+            Task.Run(() =>
+            {
+                while (true)
+                {
+                    try
+                    {
+                        if (reconnect)
+                        {
+                            conversation = BotClient.Conversations.ReconnectToConversation(conversation.ConversationId);
+                            if (conversation != null)
+                                Program.UpdateBotConversation(ChannelId, conversation);
+                        }
+
+                        // Use WebSocket receive message.
+                        WebSocketClient = new WebSocket(conversation.StreamUrl);
+                        WebSocketClient.SslConfiguration.CheckCertificateRevocation = false;
+                        // You have to specify TLS version to 1.2 or connection will be failed in handshake.
+                        WebSocketClient.SslConfiguration.EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12;
+                        WebSocketClient.SslConfiguration.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) =>
+                        {
+                            // Ignore server cetification validation.
+                            return true;
+                        };
+                        WebSocketClient.OnMessage += WebSocketClient_OnMessage;
+                        WebSocketClient.OnError += WebSocketClient_OnError;
+                        WebSocketClient.Connect();
+                        break;
+                    }
+                    catch (Exception e)
+                    {
+                        Log.OutputLine(e.Message);
+                        reconnect = true;
+                        Thread.Sleep(5000);
+                    }
+                }
+            });
+
+        }
+
         private void WebSocketClient_OnMessage(object sender, MessageEventArgs e)
         {
             try
             {
-                //Log.OutputLine(string.Format("Web socket received a {0} message: {1} ", e.IsPing?"Ping":(e.IsText?"Text":"Binary"), e.Data));
+                Log.OutputLine(string.Format("Web socket received a {0} message: {1} ", e.IsPing?"Ping":(e.IsText?"Text":"Binary"), e.Data));
                 var activitySet = JsonConvert.DeserializeObject<ActivitySet>(e.Data);
                 if (activitySet == null || activitySet.Activities == null)
                 {
@@ -325,8 +364,16 @@ namespace DiscordBotDirectline
             catch (Exception ex)
             {
                 Log.OutputLine(ex.ToString());
+                //ConnectToConversion(true);
             }
         }
+
+        private void WebSocketClient_OnError(object sender, WebSocketSharp.ErrorEventArgs e)
+        {
+            Log.OutputLine("Web socket connection to Direct Line error: " + e.Message + "  Trying to reconnect");
+            ConnectToConversion(true);
+        }
+
         private void RenderHeroCard(Microsoft.Bot.Connector.DirectLine.Attachment attachment)
         {
             // It seems that the Discord cannot display any other message type except text and voice.
