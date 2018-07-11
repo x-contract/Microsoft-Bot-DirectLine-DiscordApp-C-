@@ -146,9 +146,9 @@ namespace DiscordBotDirectline
                 att.ContentUrl = url;
                 act.Attachments.Add(att);
             }
-            Log.OutputLine("Direct to bot...");
+            Log.OutputLine(string.Format("Directing channel[{0}] activity to bot conversation[{1}] ...", msg.Channel.Id, conversationId));
             var resp = await _directlineClinet.Conversations.PostActivityAsync(conversationId, act);
-            Log.OutputLine("Direct response " + resp.Id);
+            Log.OutputLine(string.Format("Direct channel[{0}] activity to bot conversation[{1}] response {2}", msg.Channel.Id, conversationId, resp.Id));
         }
         private static async Task GenerateConversationAndSendMessage(SocketMessage msg)
         {
@@ -216,7 +216,8 @@ namespace DiscordBotDirectline
                 // exclude Bot.
                 if (msg.Author.IsBot || msg.Author.IsWebhook)
                     return;
-                Log.OutputLine(string.Format("user {0}[{1}] say in group {2}[{3}]  {4}", msg.Author.Username, msg.Author.Id, msg.Channel.Name, msg.Channel.Id, msg.Content));
+                Log.OutputLine(string.Format("user {0}[{1}] say in group {2}[{3}]  {4}", 
+                    msg.Author.Username, msg.Author.Id, (msg.Channel as SocketTextChannel)?.Guild.Name + "#" + msg.Channel.Name, msg.Channel.Id, msg.Content));
 
                 string conversationId = GetBotConversationId(msg.Channel.Id);
                 if (string.Empty == conversationId)
@@ -290,6 +291,8 @@ namespace DiscordBotDirectline
         public DirectLineClient BotClient { get; private set; }
         public ulong ChannelId { get; private set; }
         public WebSocketSharp.WebSocket WebSocketClient { get; private set; }
+        //protected System.Timers.Timer timer { get; set; }
+        public string conversionid { get; protected set; }
         #endregion
 
         #region --- Constructors ---
@@ -308,13 +311,13 @@ namespace DiscordBotDirectline
             if (WebSocketClient != null)
             {
                 WebSocketClient.Close();
-                WebSocketClient.OnMessage -= WebSocketClient_OnMessage;
-                WebSocketClient.OnError -= WebSocketClient_OnError;
                 WebSocketClient = null;
             }
+
             Conversation conversation = Program.GetBotConversation(ChannelId);
             if (null == conversation)
                 return;
+            conversionid = conversation.ConversationId;
             Task.Run(() =>
             {
                 while (true)
@@ -339,7 +342,6 @@ namespace DiscordBotDirectline
                             return true;
                         };
                         WebSocketClient.OnMessage += WebSocketClient_OnMessage;
-                        WebSocketClient.OnError += WebSocketClient_OnError;
                         WebSocketClient.Connect();
                         break;
                     }
@@ -350,27 +352,42 @@ namespace DiscordBotDirectline
                         Thread.Sleep(5000);
                     }
                 }
+
+                try
+                {
+                    while (true)
+                    {
+                        Thread.Sleep(60000);
+                        if (!WebSocketClient.Ping())
+                            throw new Exception("Ping failed");
+                        Log.OutputLine(string.Format("Web socket to conversion[{0}] ping success", this.conversionid));                        
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.OutputLine(string.Format("Web socket to conversion[{0}] connection lost: {1}", this.conversionid, ex.Message));
+                    ConnectToConversion(true);
+                }
             });
 
         }
+
 
         private void WebSocketClient_OnMessage(object sender, MessageEventArgs e)
         {
             try
             {
-                Log.OutputLine(string.Format("Web socket received a {0} message: {1} ", e.IsPing?"Ping":(e.IsText?"Text":"Binary"), e.Data));
+                //Log.OutputLine(string.Format("Web socket[{0}] received a {1} message: {2} ",this.conversionid, e.IsPing?"Ping":(e.IsText?"Text":"Binary"), e.Data));
                 var activitySet = JsonConvert.DeserializeObject<ActivitySet>(e.Data);
                 if (activitySet == null || activitySet.Activities == null)
                 {
                     return;
                 }
-                var activities = from x in activitySet.Activities
-                                 where x.From.Id == BotId
-                                 select x;
+                var activities = from x in activitySet.Activities where x.From.Id == BotId select x;
                 ISocketMessageChannel channel = Program.GetDiscordSocketChannel(ChannelId);
                 foreach (Activity activity in activities)
                 {
-                    Log.OutputLine("Bot response: " + GetMessageText(activity));
+                    Log.OutputLine(string.Format("Bot response to conversion{0} channel{1}: {2}", conversionid, ChannelId, GetMessageText(activity)));
                     if (null != channel)
                     {
                         channel.SendMessageAsync(GetMessageText(activity));
@@ -396,12 +413,6 @@ namespace DiscordBotDirectline
                 Log.OutputLine(ex.ToString());
                 //ConnectToConversion(true);
             }
-        }
-
-        private void WebSocketClient_OnError(object sender, WebSocketSharp.ErrorEventArgs e)
-        {
-            Log.OutputLine("Web socket connection to Direct Line error: " + e.Message + "  Trying to reconnect");
-            ConnectToConversion(true);
         }
 
         private void RenderHeroCard(Microsoft.Bot.Connector.DirectLine.Attachment attachment)
