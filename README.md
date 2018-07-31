@@ -1,5 +1,5 @@
 # Discord-Bot-DirectLine-CSharp
-The sample of Discord app interactive with Microsoft bot framework.
+The sample of Discord app interactive with Microsoft Bot Framework.
 
 
 This project can receive text message from DiscordApp and redirect message to Microsoft Bot Framework by Direct Line interface. Correspondingly, it also retrieve response message from Microsoft Bot Framework and passthrough to DiscordApp. By deploying binary of this project, you can add a chat bot that created by Microsoft Bot Framework for DiscordApp.
