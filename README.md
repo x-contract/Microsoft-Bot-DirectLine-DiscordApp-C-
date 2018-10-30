@@ -1,4 +1,4 @@
-# Microsoft Bot Directline-DiscordApp-CSharp
+# Microsoft Bot Direct Line-DiscordApp-CSharp
 The sample of Discord app interactive with Microsoft Bot Framework.
 
 
